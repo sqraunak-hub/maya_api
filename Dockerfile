@@ -37,7 +37,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # Use dumb-init to handle signals
-ENTRYPOINT ["/sbin/dumb-init", "--"]
-
+ENTRYPOINT ["dumb-init", "--"]
 # Start the application
 CMD ["node", "server.js"]
