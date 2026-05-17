@@ -1,12 +1,30 @@
 require("dotenv").config();
 
+console.log(
+  "GOOGLE_CREDENTIALS_JSON exists:",
+  !!process.env.GOOGLE_CREDENTIALS_JSON,
+);
+console.log(
+  "GOOGLE_CREDENTIALS_JSON length:",
+  process.env.GOOGLE_CREDENTIALS_JSON?.length,
+);
+
 if (process.env.GOOGLE_CREDENTIALS_JSON) {
-  const fs = require("fs");
-  fs.writeFileSync(
-    "/tmp/google-credentials.json",
-    process.env.GOOGLE_CREDENTIALS_JSON,
-  );
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/google-credentials.json";
+  try {
+    const fs = require("fs");
+    // Validate it's valid JSON first
+    JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+    fs.writeFileSync(
+      "/tmp/google-credentials.json",
+      process.env.GOOGLE_CREDENTIALS_JSON,
+    );
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/google-credentials.json";
+    console.log("✅ Google credentials written to /tmp/");
+  } catch (e) {
+    console.error("❌ Invalid JSON in GOOGLE_CREDENTIALS_JSON:", e.message);
+  }
+} else {
+  console.error("❌ GOOGLE_CREDENTIALS_JSON is not set!");
 }
 
 const express = require("express");
