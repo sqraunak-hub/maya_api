@@ -1,15 +1,5 @@
-const express = require("express");
-const multer = require("multer");
-const speech = require("@google-cloud/speech");
-const textToSpeech = require("@google-cloud/text-to-speech");
-const Groq = require("groq-sdk");
-const fs = require("fs");
-const path = require("path");
-const cors = require("cors");
 require("dotenv").config();
 
-const app = express();
-// Load Google credentials from environment variable
 if (process.env.GOOGLE_CREDENTIALS_JSON) {
   const fs = require("fs");
   fs.writeFileSync(
@@ -18,6 +8,17 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
   );
   process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/google-credentials.json";
 }
+
+const express = require("express");
+const multer = require("multer");
+const speech = require("@google-cloud/speech");
+const textToSpeech = require("@google-cloud/text-to-speech");
+const Groq = require("groq-sdk");
+const path = require("path");
+const cors = require("cors");
+
+const app = express();
+// Load Google credentials from environment variable
 
 // Middleware - CORS must be first
 const corsOptions = {
