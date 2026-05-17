@@ -14,6 +14,7 @@ const multer = require("multer");
 const speech = require("@google-cloud/speech");
 const textToSpeech = require("@google-cloud/text-to-speech");
 const Groq = require("groq-sdk");
+const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 
