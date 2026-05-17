@@ -22,7 +22,6 @@ COPY --from=builder /app/node_modules ./node_modules
 
 # Copy application code
 COPY server.js .
-COPY google-credentials.json .
 
 # Create uploads directory
 RUN mkdir -p uploads && chmod 755 uploads

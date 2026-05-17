@@ -9,6 +9,15 @@ const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
+// Load Google credentials from environment variable
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+  const fs = require("fs");
+  fs.writeFileSync(
+    "/tmp/google-credentials.json",
+    process.env.GOOGLE_CREDENTIALS_JSON,
+  );
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/google-credentials.json";
+}
 
 // Middleware - CORS must be first
 const corsOptions = {
