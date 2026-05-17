@@ -37,7 +37,6 @@ const path = require("path");
 const cors = require("cors");
 
 const app = express();
-// Load Google credentials from environment variable
 
 // Middleware - CORS must be first
 const corsOptions = {
@@ -70,6 +69,74 @@ const upload = multer({
 const sttClient = new speech.SpeechClient();
 const ttsClient = new textToSpeech.TextToSpeechClient();
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// ──────────────────────────────────────────────
+// GEMINI TTS WITH EMOTION DETECTION
+// ──────────────────────────────────────────────
+function getEmotionPrompt(text) {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes("chalo") ||
+    lower.includes("you got this") ||
+    lower.includes("let's go") ||
+    lower.includes("keep going") ||
+    lower.includes("come on") ||
+    lower.includes("push") ||
+    lower.includes("lete hain")
+  )
+    return "Read aloud with high energy and motivation, like a fitness coach!";
+  if (
+    lower.includes("samajh") ||
+    lower.includes("bura") ||
+    lower.includes("sorry") ||
+    lower.includes("theek ho") ||
+    lower.includes("tension") ||
+    lower.includes("stress") ||
+    lower.includes("i'm here")
+  )
+    return "Read aloud softly and with empathy and warmth.";
+  if (
+    lower.includes("amazing") ||
+    lower.includes("great") ||
+    lower.includes("bahut accha") ||
+    lower.includes("fantastic") ||
+    lower.includes("well done") ||
+    text.includes("!")
+  )
+    return "Read aloud with excitement and enthusiasm.";
+  if (
+    lower.includes("jaan") ||
+    lower.includes("janu") ||
+    lower.includes("love") ||
+    lower.includes("baby")
+  )
+    return "Read aloud in a warm, caring and affectionate tone.";
+  return "Read aloud in a warm, friendly and conversational tone.";
+}
+
+async function geminiTTS(text, languageCode = "en-US") {
+  const voiceName = languageCode === "hi-IN" ? "Kore" : "Zephyr";
+  const emotionPrompt = getEmotionPrompt(text);
+
+  const [ttsResponse] = await ttsClient.synthesizeSpeech({
+    input: {
+      prompt: emotionPrompt,
+      text: text,
+    },
+    voice: {
+      languageCode: languageCode,
+      modelName: "gemini-2.5-flash-tts-preview",
+      name: voiceName,
+    },
+    audioConfig: {
+      audioEncoding: "MP3",
+      speakingRate: 1.0,
+      pitch: 0.0,
+    },
+  });
+
+  return ttsResponse.audioContent;
+}
 
 // In-memory storage for conversations (use Redis/DB in production)
 const conversations = {};
@@ -111,17 +178,14 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
     }
 
     // Multer saves files without extensions, but Groq API needs an extension to identify the format.
-    // Let's add the original extension back to the file.
     const ext = path.extname(audioFile.originalname) || ".m4a";
     const pathWithExt = audioFile.path + ext;
     fs.renameSync(audioFile.path, pathWithExt);
-    audioFile.path = pathWithExt; // Update path so it gets cleaned up later
+    audioFile.path = pathWithExt;
 
-    // 1. Speech to Text using Groq Whisper (Handles all formats natively)
+    // 1. Speech to Text using Groq Whisper
     console.log("🔄 Converting speech to text with Whisper...");
 
-    // The reason Whisper failed earlier was because it wasn't expecting Hinglish.
-    // By providing a context prompt, Whisper accuracy jumps to 99% for mixed languages!
     const sttLanguage = (req.body.language || "hi") === "en" ? "en" : "hi";
     const sttPrompt =
       sttLanguage === "en"
@@ -134,13 +198,13 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
       try {
         const transcription = await groq.audio.transcriptions.create({
           file: fs.createReadStream(audioFile.path),
-          model: "whisper-large-v3", // Switched from turbo for MUCH better Hinglish accuracy
+          model: "whisper-large-v3",
           language: sttLanguage,
           prompt: sttPrompt,
           response_format: "json",
         });
         userText = transcription.text;
-        break; // Success
+        break;
       } catch (err) {
         retries--;
         console.warn(
@@ -148,21 +212,20 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
           err.message,
         );
         if (retries === 0) {
-          fs.unlinkSync(audioFile.path); // Cleanup
+          fs.unlinkSync(audioFile.path);
           return res.status(500).json({
             error: "Network error during speech recognition. Please try again.",
           });
         }
-        await new Promise((r) => setTimeout(r, 500)); // Wait before retry
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
 
     if (!userText || userText.trim() === "") {
-      fs.unlinkSync(audioFile.path); // Cleanup
+      fs.unlinkSync(audioFile.path);
       return res.status(400).json({ error: "Could not understand audio" });
     }
 
-    // Whisper often hallucinates these exact phrases when it hears pure background noise (traffic/fans)
     const lowerText = userText
       .toLowerCase()
       .replace(/[^a-z0-9\sअ-ह]/g, "")
@@ -202,7 +265,6 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
       "जी",
     ];
 
-    // Also reject if the text is just repeated characters or very short
     const isRepeat = /^(.{1,3})\1+$/.test(lowerText);
     if (
       noiseHallucinations.includes(lowerText) ||
@@ -224,7 +286,7 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
           startTime: new Date(),
           activity: null,
           duration: 0,
-          userName: "friend", // Default
+          userName: "friend",
         },
       };
     }
@@ -235,7 +297,6 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
     );
     context.sessionData.duration = sessionDuration;
 
-    // Add user message to history
     context.messages.push({
       role: "user",
       content: userText,
@@ -249,11 +310,6 @@ app.post("/chat", upload.single("audio"), async (req, res) => {
       targetLang === "en"
         ? "You MUST ALWAYS respond in clear, conversational English."
         : "You MUST ALWAYS respond in clear, conversational Hindi.";
-
-    const langExamples =
-      targetLang === "en"
-        ? `- "I'm so sorry to hear you're going through that. I'm here for you, take a deep breath."\n- "That sounds really stressful. Maybe a quick walk could help clear your mind, or we can just chat."\n- "Hey, how was your day today?"`
-        : `- "मुझे यह सुनकर बहुत बुरा लगा। मैं तुम्हारे साथ हूँ, एक लंबी सांस लो।"\n- "यह सच में बहुत स्ट्रेसफुल लग रहा है। शायद थोड़ा टहलने से मन हल्का हो जाए, या हम बस ऐसे ही बात कर सकते हैं।"\n- "हे, आज का दिन कैसा रहा तुम्हारा?"`;
 
     const agentName = req.body.agentName || "Maya";
     const systemPrompt = `You are ${agentName}, a real-time voice AI companion for the user during daily life and workouts.
@@ -307,11 +363,7 @@ You are NOT:
 You are:
 → A companion who subtly improves user's lifestyle
 
-
 6. USER ADDRESSING & RELATIONSHIP STYLE:
-
-- You must address the user consistently based on relationship tone.
-- NEVER randomly switch tone.
 
 MODES:
 
@@ -333,7 +385,6 @@ RULES:
 - Stay consistent in one mode unless user clearly shifts tone
 - Never mix tones (e.g., "bhai jaan" ❌)
 - Prioritize natural human-like addressing
-
 
 7. LANGUAGE:
 ${langRule}
@@ -382,7 +433,6 @@ Only output the JSON block if a NEW activity was reported. DO NOT include it if 
       }
     }
 
-    // Add AI response to history
     context.messages.push({
       role: "assistant",
       content: textForSpeech,
@@ -390,35 +440,18 @@ Only output the JSON block if a NEW activity was reported. DO NOT include it if 
 
     console.log("Maya says:", textForSpeech);
 
-    // 4. Text to Speech
-    console.log("Converting text to speech...");
+    // 4. Text to Speech — Gemini with emotion
+    console.log("🎙️ Converting text to speech with Gemini TTS...");
 
-    // Allow frontend to pass custom settings, otherwise use defaults
-    const voiceName = req.body.voiceName || "Zephyr";
-    const speed = parseFloat(req.body.speed) || 1.0;
-    const pitchValue = parseFloat(req.body.pitch) || 0.0;
     const languageCode = targetLang === "en" ? "en-US" : "hi-IN";
-    const [ttsResponse] = await ttsClient.synthesizeSpeech({
-      input: { text: textForSpeech },
-      voice: {
-        languageCode: languageCode,
-        name: languageCode === "hi-IN" ? "hi-IN-Wavenet-D" : "en-US-Wavenet-F",
-      },
-      audioConfig: {
-        audioEncoding: "MP3",
-        speakingRate: speed,
-        pitch: pitchValue,
-      },
-    });
+    const audioContent = await geminiTTS(textForSpeech, languageCode);
 
-    // Save audio file
     const timestamp = Date.now();
     const outputFile = `output-${timestamp}.mp3`;
-    fs.writeFileSync(outputFile, ttsResponse.audioContent, "binary");
+    fs.writeFileSync(outputFile, audioContent, "binary");
 
-    console.log("Audio generated:", outputFile);
+    console.log("✅ Audio generated:", outputFile);
 
-    // Send response
     res.json({
       success: true,
       text: aiResponse,
@@ -428,20 +461,17 @@ Only output the JSON block if a NEW activity was reported. DO NOT include it if 
       timestamp: new Date().toISOString(),
     });
 
-    // Cleanup uploaded audio file
     fs.unlinkSync(audioFile.path);
 
-    // Auto-delete generated audio after 2 minutes
     setTimeout(() => {
       if (fs.existsSync(outputFile)) {
         fs.unlinkSync(outputFile);
-        console.log("Deleted:", outputFile);
+        console.log("🗑️ Deleted:", outputFile);
       }
     }, 120000);
   } catch (error) {
-    console.error("Error:", error);
+    console.error("❌ Error:", error);
 
-    // Cleanup on error
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
@@ -454,7 +484,7 @@ Only output the JSON block if a NEW activity was reported. DO NOT include it if 
   }
 });
 
-// Update session data (activity type, user name, etc.)
+// Update session data
 app.post("/session/update", express.json(), (req, res) => {
   try {
     const { userId, activity, userName } = req.body;
@@ -463,7 +493,6 @@ app.post("/session/update", express.json(), (req, res) => {
       return res.status(400).json({ error: "userId required" });
     }
 
-    // Initialize if doesn't exist
     if (!conversations[userId]) {
       conversations[userId] = {
         messages: [],
@@ -476,15 +505,14 @@ app.post("/session/update", express.json(), (req, res) => {
       };
     }
 
-    // Update session data
     if (activity) {
       conversations[userId].sessionData.activity = activity;
-      console.log(`Updated activity for ${userId}:`, activity);
+      console.log(`✅ Updated activity for ${userId}:`, activity);
     }
 
     if (userName) {
       conversations[userId].sessionData.userName = userName;
-      console.log(`Updated user name for ${userId}:`, userName);
+      console.log(`✅ Updated user name for ${userId}:`, userName);
     }
 
     res.json({
@@ -503,7 +531,7 @@ app.post("/session/update", express.json(), (req, res) => {
 // ── INIT GREETING ENDPOINT ──
 app.post("/chat/init", express.json(), async (req, res) => {
   try {
-    const { language, agentName, voiceName } = req.body;
+    const { language, agentName } = req.body;
     const targetLang = (language || "hi").toLowerCase();
 
     const name = agentName || "Maya";
@@ -512,24 +540,12 @@ app.post("/chat/init", express.json(), async (req, res) => {
         ? `Hey, I'm ${name}. How was your day today?`
         : `नमस्ते, मैं ${name} हूँ। आज का दिन कैसा रहा तुम्हारा?`;
 
-    const languageCode = targetLang === "en" ? "en-US" : "hi-IN";
-
-    const [ttsResponse] = await ttsClient.synthesizeSpeech({
-      input: { text: greetingText },
-      voice: {
-        languageCode: languageCode,
-        name: languageCode === "hi-IN" ? "hi-IN-Wavenet-D" : "en-US-Wavenet-F",
-      },
-      audioConfig: {
-        audioEncoding: "MP3",
-        speakingRate: 1.0,
-        pitch: 0.5,
-      },
-    });
+    const langCode = targetLang === "en" ? "en-US" : "hi-IN";
+    const audioContent = await geminiTTS(greetingText, langCode);
 
     const outputFileName = `greeting-${Date.now()}.mp3`;
     const outputPath = path.join(__dirname, outputFileName);
-    fs.writeFileSync(outputPath, ttsResponse.audioContent, "binary");
+    fs.writeFileSync(outputPath, audioContent, "binary");
 
     res.json({
       success: true,
@@ -537,7 +553,7 @@ app.post("/chat/init", express.json(), async (req, res) => {
       text: greetingText,
     });
   } catch (error) {
-    console.error("Init Error:", error);
+    console.error("❌ Init Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -560,13 +576,13 @@ app.get("/session/:userId", cors(corsOptions), (req, res) => {
   });
 });
 
-// Clear session (for testing)
+// Clear session
 app.delete("/session/:userId", cors(corsOptions), (req, res) => {
   const { userId } = req.params;
 
   if (conversations[userId]) {
     delete conversations[userId];
-    console.log(` Cleared session for ${userId}`);
+    console.log(`🗑️ Cleared session for ${userId}`);
   }
 
   res.json({
@@ -655,14 +671,13 @@ Generate all 7 days (Monday through Sunday). Make it realistic and tailored to t
 
       const plans = JSON.parse(completion.choices[0].message.content);
       profile.plans = plans;
-      // Keep flat fields for backward compat
       profile.dietPlan = plans.summary?.dietPlan || "";
       profile.workoutPlan = plans.summary?.workoutPlan || "";
     }
 
     res.json({ success: true, profile });
   } catch (e) {
-    console.error("Profile error:", e);
+    console.error("❌ Profile error:", e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -671,10 +686,10 @@ app.get("/profile/:userId", cors(corsOptions), (req, res) => {
   res.json({ profile: userProfiles[req.params.userId] || null });
 });
 
-// AI Plan Chat — user can ask questions about their plan
+// AI Plan Chat
 app.post("/plan/chat", express.json(), async (req, res) => {
   try {
-    const { userId, message, planType } = req.body; // planType: "diet" | "workout"
+    const { userId, message, planType } = req.body;
     const profile = userProfiles[userId];
 
     const context = profile?.plans
@@ -699,7 +714,7 @@ app.post("/plan/chat", express.json(), async (req, res) => {
       reply: completion.choices[0].message.content.trim(),
     });
   } catch (e) {
-    console.error("Plan chat error:", e);
+    console.error("❌ Plan chat error:", e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -712,8 +727,6 @@ const reminders = {};
 app.post("/reminders/schedule", express.json(), (req, res) => {
   try {
     const { userId, type, time, title, message, frequency } = req.body;
-    // type: 'workout', 'meal', 'hydration', 'motivational'
-    // frequency: 'daily', 'weekly', 'custom'
 
     if (!reminders[userId]) reminders[userId] = [];
 
@@ -790,13 +803,11 @@ app.get("/analytics/:userId", cors(corsOptions), (req, res) => {
 
   const filtered = userAnalytics.filter((a) => new Date(a.date) >= cutoffDate);
 
-  // Calculate stats
   const totalCalories = filtered.reduce((sum, a) => sum + a.calories, 0);
   const totalSteps = filtered.reduce((sum, a) => sum + a.steps, 0);
   const totalWorkout = filtered.reduce((sum, a) => sum + a.workoutMinutes, 0);
   const avgDaily = Math.round(totalCalories / (days || 1));
 
-  // Streak calculation
   const today = new Date();
   let streak = 0;
   for (let i = 0; i < 365; i++) {
@@ -875,24 +886,13 @@ ${langRule}`;
 
     const text = guidance.choices[0].message.content.trim();
 
-    // Generate TTS for the guidance
-    const languageCode = feedbackLang === "en" ? "en-US" : "hi-IN";
-    const [ttsResponse] = await ttsClient.synthesizeSpeech({
-      input: { text },
-      voice: {
-        languageCode: languageCode,
-        name: languageCode === "hi-IN" ? "hi-IN-Wavenet-D" : "en-US-Wavenet-F",
-      },
-      audioConfig: {
-        audioEncoding: "MP3",
-        speakingRate: 1.1,
-        pitch: 0.2,
-      },
-    });
+    // Gemini TTS for coach guidance
+    const langCode = feedbackLang === "en" ? "en-US" : "hi-IN";
+    const audioContent = await geminiTTS(text, langCode);
 
     const timestamp = Date.now();
     const outputFile = `coach-${timestamp}.mp3`;
-    fs.writeFileSync(outputFile, ttsResponse.audioContent, "binary");
+    fs.writeFileSync(outputFile, audioContent, "binary");
 
     setTimeout(() => {
       if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
@@ -947,7 +947,7 @@ app.post("/health/sync", express.json(), (req, res) => {
       date: date || new Date().toISOString().split("T")[0],
       heartRate: heartRate || null,
       sleepHours: sleepHours || null,
-      waterIntake: waterIntake || 0, // in ml
+      waterIntake: waterIntake || 0,
       timestamp: new Date(),
     };
 
@@ -970,7 +970,6 @@ app.get("/health/:userId", cors(corsOptions), (req, res) => {
 
   const filtered = userHealth.filter((h) => new Date(h.date) >= cutoffDate);
 
-  // Calculate averages
   const avgHeartRate = Math.round(
     filtered.filter((h) => h.heartRate).reduce((s, h) => s + h.heartRate, 0) /
       Math.max(filtered.filter((h) => h.heartRate).length, 1),
@@ -1013,14 +1012,12 @@ app.post("/achievements/check", express.json(), async (req, res) => {
 
     const newBadges = [];
 
-    // Check for achievements
     const totalWorkout = userAnalytics.reduce(
       (s, a) => s + a.workoutMinutes,
       0,
     );
     const totalCalories = userAnalytics.reduce((s, a) => s + a.calories, 0);
 
-    // 7-Day Streak
     let streak = 0;
     for (let i = 0; i < 365; i++) {
       const date = new Date();
@@ -1043,7 +1040,6 @@ app.post("/achievements/check", express.json(), async (req, res) => {
       userActs.points += 100;
     }
 
-    // 1000 Calories Burned
     if (
       totalCalories >= 1000 &&
       !userActs.badges.find((b) => b.id === "calorie-1000")
@@ -1057,7 +1053,6 @@ app.post("/achievements/check", express.json(), async (req, res) => {
       userActs.points += 150;
     }
 
-    // 10 Hour Workout
     if (
       totalWorkout >= 600 &&
       !userActs.badges.find((b) => b.id === "workout-600")
@@ -1071,7 +1066,6 @@ app.post("/achievements/check", express.json(), async (req, res) => {
       userActs.points += 200;
     }
 
-    // Good Sleep
     const avgSleep =
       userHealth
         .filter((h) => h.sleepHours)
@@ -1168,9 +1162,10 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════╗
-║  Fitness Voice Agent API Server    ║
-║  Server running on port ${PORT}       ║
-║  Local: http://localhost:${PORT}      ║
+║  Fitness Voice Agent API Server        ║
+║  Server running on port ${PORT}           ║
+║  Local: http://localhost:${PORT}          ║
+║  TTS: Gemini 2.5 Flash (Emotional)     ║
 ╚════════════════════════════════════════╝
 
 Ready to receive requests!
@@ -1193,7 +1188,6 @@ process.on("unhandledRejection", (reason, promise) => {
   process.exit(1);
 });
 
-// Graceful shutdown
 process.on("SIGINT", () => {
   console.log("\n⏹️  Shutting down gracefully...");
   server.close(() => {
