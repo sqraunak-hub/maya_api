@@ -1,0 +1,62 @@
+### Health Check
+GET http://localhost:3000/
+
+### Update Session
+POST http://localhost:3000/session/update
+Content-Type: application/json
+
+{
+  "userId": "test-user-1",
+  "activity": "running",
+  "userName": "Raunak"
+}
+
+### Get Session
+GET http://localhost:3000/session/test-user-1
+
+### Clear Session
+DELETE http://localhost:3000/session/test-user-1
+```
+
+---
+
+## Now: Get Your API Keys
+
+### 1. Get Groq API Key (5 mins)
+
+1. Go to https://console.groq.com/
+2. Sign up (free)
+3. Click "API Keys" → "Create API Key"
+4. Copy the key
+5. Paste in `.env` file:
+```
+   GROQ_API_KEY=gsk_xxxxxxxxxxxxx
+```
+
+---
+
+### 2. Get Google Cloud Credentials (15 mins)
+
+**Step-by-step:**
+
+1. Go to https://console.cloud.google.com/
+2. Create new project (e.g., "fitness-voice-mvp")
+3. Enable APIs:
+   - Search "Speech-to-Text API" → Enable
+   - Search "Text-to-Speech API" → Enable
+4. Create service account:
+   - Go to "IAM & Admin" → "Service Accounts"
+   - Click "Create Service Account"
+   - Name: "fitness-voice-agent"
+   - Role: "Owner" (for simplicity in MVP)
+   - Click "Done"
+5. Create key:
+   - Click on the service account you just created
+   - Go to "Keys" tab
+   - "Add Key" → "Create new key" → "JSON"
+   - Download the JSON file
+6. Save as `google-credentials.json` in your project root
+
+Your `.env` should have:
+```
+GOOGLE_APPLICATION_CREDENTIALS=./google-credentials.json

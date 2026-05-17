@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  fitness-voice-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fitness-voice-api
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-credentials.json
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
