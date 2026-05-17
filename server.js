@@ -125,7 +125,7 @@ async function geminiTTS(text, languageCode = "en-US") {
     },
     voice: {
       languageCode: languageCode,
-      modelName: "gemini-2.5-flash-tts-preview",
+      modelName: "gemini-2.5-flash-tts",
       name: voiceName,
     },
     audioConfig: {
