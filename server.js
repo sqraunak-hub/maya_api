@@ -704,6 +704,465 @@ app.post("/plan/chat", express.json(), async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// 1. NOTIFICATIONS & REMINDERS
+// ──────────────────────────────────────────────
+const reminders = {};
+
+app.post("/reminders/schedule", express.json(), (req, res) => {
+  try {
+    const { userId, type, time, title, message, frequency } = req.body;
+    // type: 'workout', 'meal', 'hydration', 'motivational'
+    // frequency: 'daily', 'weekly', 'custom'
+
+    if (!reminders[userId]) reminders[userId] = [];
+
+    const reminder = {
+      id: Date.now(),
+      type,
+      time,
+      title,
+      message,
+      frequency,
+      active: true,
+      createdAt: new Date(),
+    };
+
+    reminders[userId].push(reminder);
+    console.log(`📬 Scheduled reminder for ${userId}:`, reminder.title);
+
+    res.json({ success: true, reminder });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/reminders/:userId", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  res.json({ reminders: reminders[userId] || [] });
+});
+
+app.delete("/reminders/:userId/:reminderId", (req, res) => {
+  const { userId, reminderId } = req.params;
+  if (reminders[userId]) {
+    reminders[userId] = reminders[userId].filter((r) => r.id != reminderId);
+  }
+  res.json({ success: true });
+});
+
+// ──────────────────────────────────────────────
+// 2. PROGRESS ANALYTICS & DASHBOARD
+// ──────────────────────────────────────────────
+const analytics = {};
+
+app.post("/analytics/log", express.json(), (req, res) => {
+  try {
+    const { userId, date, calories, steps, workoutMinutes, activities } =
+      req.body;
+
+    if (!analytics[userId]) analytics[userId] = [];
+
+    const entry = {
+      date: date || new Date().toISOString().split("T")[0],
+      calories: calories || 0,
+      steps: steps || 0,
+      workoutMinutes: workoutMinutes || 0,
+      activities: activities || {},
+      timestamp: new Date(),
+    };
+
+    analytics[userId].push(entry);
+    console.log(`📊 Logged analytics for ${userId}:`, entry);
+
+    res.json({ success: true, entry });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/analytics/:userId", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  const { days = 30 } = req.query;
+
+  const userAnalytics = analytics[userId] || [];
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - days);
+
+  const filtered = userAnalytics.filter((a) => new Date(a.date) >= cutoffDate);
+
+  // Calculate stats
+  const totalCalories = filtered.reduce((sum, a) => sum + a.calories, 0);
+  const totalSteps = filtered.reduce((sum, a) => sum + a.steps, 0);
+  const totalWorkout = filtered.reduce((sum, a) => sum + a.workoutMinutes, 0);
+  const avgDaily = Math.round(totalCalories / (days || 1));
+
+  // Streak calculation
+  const today = new Date();
+  let streak = 0;
+  for (let i = 0; i < 365; i++) {
+    const checkDate = new Date(today);
+    checkDate.setDate(checkDate.getDate() - i);
+    const dateStr = checkDate.toISOString().split("T")[0];
+    const hasWorkout = filtered.some(
+      (a) => a.date === dateStr && a.workoutMinutes > 0,
+    );
+    if (hasWorkout) streak++;
+    else break;
+  }
+
+  res.json({
+    period: days,
+    totalCalories,
+    totalSteps,
+    totalWorkoutMinutes: totalWorkout,
+    avgDailyCalories: avgDaily,
+    streak,
+    entries: filtered,
+  });
+});
+
+app.get("/analytics/:userId/weekly", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  const userAnalytics = analytics[userId] || [];
+
+  const weekData = {};
+  const weekDays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+  userAnalytics.slice(-7).forEach((entry) => {
+    const date = new Date(entry.date);
+    const day = weekDays[date.getDay()];
+    weekData[day] = {
+      calories: entry.calories,
+      workout: entry.workoutMinutes,
+      steps: entry.steps,
+    };
+  });
+
+  res.json(weekData);
+});
+
+// ──────────────────────────────────────────────
+// 3. REAL-TIME WORKOUT COACH MODE
+// ──────────────────────────────────────────────
+app.post("/coach/guidance", express.json(), async (req, res) => {
+  try {
+    const { userId, exerciseName, repsCompleted, setNumber, feedbackLang } =
+      req.body;
+
+    const langRule =
+      feedbackLang === "en"
+        ? "Respond in English"
+        : "Respond in Hindi/Hinglish";
+
+    const prompt = `You are Maya, a real-time fitness coach giving motivational voice feedback during a workout.
+The user is doing: ${exerciseName}
+Current: Set ${setNumber}, ${repsCompleted} reps completed
+
+Give SHORT (max 1 sentence) motivational feedback. Be encouraging and energetic.
+Examples:
+- "Great form! Keep the pace steady!"
+- "You got this! 5 more reps, let's go!"
+- "Breathe! Don't hold your breath!"
+
+${langRule}`;
+
+    const guidance = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+      max_tokens: 50,
+    });
+
+    const text = guidance.choices[0].message.content.trim();
+
+    // Generate TTS for the guidance
+    const languageCode = feedbackLang === "en" ? "en-US" : "hi-IN";
+    const [ttsResponse] = await ttsClient.synthesizeSpeech({
+      input: { text },
+      voice: {
+        languageCode: languageCode,
+        name: languageCode === "hi-IN" ? "hi-IN-Wavenet-D" : "en-US-Wavenet-F",
+      },
+      audioConfig: {
+        audioEncoding: "MP3",
+        speakingRate: 1.1,
+        pitch: 0.2,
+      },
+    });
+
+    const timestamp = Date.now();
+    const outputFile = `coach-${timestamp}.mp3`;
+    fs.writeFileSync(outputFile, ttsResponse.audioContent, "binary");
+
+    setTimeout(() => {
+      if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+    }, 60000);
+
+    res.json({
+      success: true,
+      text,
+      audioUrl: `/${outputFile}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/coach/form-tips", express.json(), async (req, res) => {
+  try {
+    const { exerciseName, goal, lang } = req.body;
+
+    const prompt = `Provide 2-3 brief form tips for ${exerciseName} exercise aimed at ${goal || "general fitness"}.
+Keep it very concise and actionable. Format as bullet points.
+${lang === "hi" ? "Respond in Hindi" : "Respond in English"}`;
+
+    const tips = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.5,
+      max_tokens: 100,
+    });
+
+    res.json({
+      exercise: exerciseName,
+      tips: tips.choices[0].message.content.trim(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ──────────────────────────────────────────────
+// 4. HEALTH INTEGRATION
+// ──────────────────────────────────────────────
+const healthData = {};
+
+app.post("/health/sync", express.json(), (req, res) => {
+  try {
+    const { userId, heartRate, sleepHours, waterIntake, date } = req.body;
+
+    if (!healthData[userId]) healthData[userId] = [];
+
+    const entry = {
+      date: date || new Date().toISOString().split("T")[0],
+      heartRate: heartRate || null,
+      sleepHours: sleepHours || null,
+      waterIntake: waterIntake || 0, // in ml
+      timestamp: new Date(),
+    };
+
+    healthData[userId].push(entry);
+    console.log(`❤️ Synced health data for ${userId}`);
+
+    res.json({ success: true, entry });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/health/:userId", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  const { days = 7 } = req.query;
+
+  const userHealth = healthData[userId] || [];
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - days);
+
+  const filtered = userHealth.filter((h) => new Date(h.date) >= cutoffDate);
+
+  // Calculate averages
+  const avgHeartRate = Math.round(
+    filtered.filter((h) => h.heartRate).reduce((s, h) => s + h.heartRate, 0) /
+      Math.max(filtered.filter((h) => h.heartRate).length, 1),
+  );
+  const avgSleep = (
+    filtered.filter((h) => h.sleepHours).reduce((s, h) => s + h.sleepHours, 0) /
+    Math.max(filtered.filter((h) => h.sleepHours).length, 1)
+  ).toFixed(1);
+  const totalWater = filtered.reduce((s, h) => s + h.waterIntake, 0);
+
+  res.json({
+    period: days,
+    avgHeartRate,
+    avgSleepHours: parseFloat(avgSleep),
+    totalWaterIntakeMl: totalWater,
+    entries: filtered,
+  });
+});
+
+// ──────────────────────────────────────────────
+// 5. GAMIFICATION & ACHIEVEMENTS
+// ──────────────────────────────────────────────
+const userAchievements = {};
+
+app.post("/achievements/check", express.json(), async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userAchievements[userId]) {
+      userAchievements[userId] = {
+        badges: [],
+        points: 0,
+        leaderboardRank: null,
+      };
+    }
+
+    const userAnalytics = analytics[userId] || [];
+    const userHealth = healthData[userId] || [];
+    const userActs = userAchievements[userId];
+
+    const newBadges = [];
+
+    // Check for achievements
+    const totalWorkout = userAnalytics.reduce(
+      (s, a) => s + a.workoutMinutes,
+      0,
+    );
+    const totalCalories = userAnalytics.reduce((s, a) => s + a.calories, 0);
+
+    // 7-Day Streak
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split("T")[0];
+      const hasWorkout = userAnalytics.some(
+        (a) => a.date === dateStr && a.workoutMinutes > 0,
+      );
+      if (hasWorkout) streak++;
+      else break;
+    }
+
+    if (streak >= 7 && !userActs.badges.find((b) => b.id === "streak-7")) {
+      newBadges.push({
+        id: "streak-7",
+        name: "🔥 7-Day Streak",
+        description: "Worked out 7 days in a row",
+        unlockedAt: new Date(),
+      });
+      userActs.points += 100;
+    }
+
+    // 1000 Calories Burned
+    if (
+      totalCalories >= 1000 &&
+      !userActs.badges.find((b) => b.id === "calorie-1000")
+    ) {
+      newBadges.push({
+        id: "calorie-1000",
+        name: "🔥 1000 Calories",
+        description: "Burned 1000+ calories",
+        unlockedAt: new Date(),
+      });
+      userActs.points += 150;
+    }
+
+    // 10 Hour Workout
+    if (
+      totalWorkout >= 600 &&
+      !userActs.badges.find((b) => b.id === "workout-600")
+    ) {
+      newBadges.push({
+        id: "workout-600",
+        name: "💪 10 Hour Marathon",
+        description: "Completed 10 hours of workouts",
+        unlockedAt: new Date(),
+      });
+      userActs.points += 200;
+    }
+
+    // Good Sleep
+    const avgSleep =
+      userHealth
+        .filter((h) => h.sleepHours)
+        .slice(-7)
+        .reduce((s, h) => s + h.sleepHours, 0) /
+      Math.max(userHealth.filter((h) => h.sleepHours).length, 1);
+
+    if (avgSleep >= 7 && !userActs.badges.find((b) => b.id === "sleep-7")) {
+      newBadges.push({
+        id: "sleep-7",
+        name: "😴 Sleep Champion",
+        description: "Averaged 7+ hours of sleep",
+        unlockedAt: new Date(),
+      });
+      userActs.points += 50;
+    }
+
+    userActs.badges = [...(userActs.badges || []), ...newBadges];
+
+    res.json({
+      newBadges,
+      totalPoints: userActs.points,
+      allBadges: userActs.badges,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/achievements/:userId", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  const acts = userAchievements[userId] || {
+    badges: [],
+    points: 0,
+  };
+
+  res.json({
+    badges: acts.badges,
+    points: acts.points,
+    level: Math.floor(acts.points / 500) + 1,
+  });
+});
+
+app.get("/leaderboard", cors(corsOptions), (req, res) => {
+  const leaderboard = Object.entries(userAchievements)
+    .map(([userId, acts]) => ({
+      userId,
+      points: acts.points,
+      badgeCount: acts.badges.length,
+      level: Math.floor(acts.points / 500) + 1,
+    }))
+    .sort((a, b) => b.points - a.points)
+    .slice(0, 20);
+
+  res.json(leaderboard);
+});
+
+// Friend/Social endpoints
+const userFriends = {};
+
+app.post("/social/add-friend", express.json(), (req, res) => {
+  try {
+    const { userId, friendUserId } = req.body;
+
+    if (!userFriends[userId]) userFriends[userId] = [];
+    if (!userFriends[userId].find((f) => f === friendUserId)) {
+      userFriends[userId].push(friendUserId);
+    }
+
+    res.json({ success: true, message: "Friend added" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/social/friends/:userId", cors(corsOptions), (req, res) => {
+  const { userId } = req.params;
+  const friends = userFriends[userId] || [];
+
+  const friendStats = friends.map((friendId) => {
+    const friendActs = userAchievements[friendId];
+    return {
+      friendId,
+      points: friendActs?.points || 0,
+      badgeCount: friendActs?.badges?.length || 0,
+    };
+  });
+
+  res.json(friendStats);
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
